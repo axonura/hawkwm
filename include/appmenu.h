@@ -8,17 +8,21 @@
 #ifndef APPMENU_H
 #define APPMENU_H
 
-#include <QDialog>
+#include <QWidget>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QKeyEvent>
+#include <QProcess>
 
-class HAppMenu : public QDialog {
+class HAppMenu : public QWidget {
     Q_OBJECT
 public:
-    explicit HAppMenu(QWidget *parent = nullptr);
-    ~HAppMenu() = default;
+    explicit HAppMenu(const QString &socketName, QWidget *parent = nullptr);
+    ~HAppMenu();
     void focusSearch();
+
+signals:
+    void contentChanged();
 
 protected:
     void keyPressEvent(QKeyEvent *e) override;
@@ -26,6 +30,8 @@ protected:
 private:
     QListWidget *m_list;
     QLineEdit *m_filter;
+    QProcess *m_process = nullptr;
+    QString m_socketName;
 
     void loadApplications();
     void launchSelected();

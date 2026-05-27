@@ -11,6 +11,7 @@
 #include <QOpenGLFunctions>
 #include <QMouseEvent>
 #include <QWheelEvent>
+#include <QPixmap>
 #include <QWaylandCompositor>
 #include <QKeyEvent>
 #include <compositor.h>
@@ -22,8 +23,6 @@
 
 HWindow::HWindow() {
     qDebug("Window Is Initialized");
-    if (m_seat == nullptr)
-        m_seat = new QWaylandSeat(m_compositor, QWaylandSeat::Pointer | QWaylandSeat::Keyboard | QWaylandSeat::Touch);
 }
 
 void HWindow::initializeGL() {
@@ -68,6 +67,26 @@ void HWindow::paintGL() {
         }
     }
 
+    if (m_menuVisible) {
+        if (m_menuDirty) {
+            delete m_menuTexture;
+            QPixmap pixmap = m_appMenu->grab();
+            QImage img = pixmap.toImage().convertToFormat(QImage::Format_RGBA8888);
+            m_menuTexture = new QOpenGLTexture(img);
+            m_menuTexture->setMinMagFilters(QOpenGLTexture::Linear, QOpenGLTexture::Linear);
+            m_menuDirty = false;
+        }
+        if (m_menuTexture) {
+            m_textureBlitter.bind(GL_TEXTURE_2D);
+            QSize winSize = size();
+            QPointF menuPos((winSize.width() - m_menuTexture->width()) / 2.0,
+                            (winSize.height() - m_menuTexture->height()) / 2.0);
+            QRectF menuRect(menuPos, QSizeF(m_menuTexture->width(), m_menuTexture->height()));
+            QMatrix4x4 menuTransform = QOpenGLTextureBlitter::targetTransform(menuRect, QRect(QPoint(), winSize));
+            m_textureBlitter.blit(m_menuTexture->textureId(), menuTransform, QOpenGLTextureBlitter::OriginTopLeft);
+        }
+    }
+
     m_textureBlitter.release();
     m_compositor->endRender();
 }
@@ -87,6 +106,8 @@ void HWindow::mousePressEvent(QMouseEvent *event) {
 
 void HWindow::setCompositor(HCompositor *hcmp) {
     m_compositor = hcmp;
+    if (m_seat == nullptr)
+        m_seat = new QWaylandSeat(m_compositor, QWaylandSeat::Pointer | QWaylandSeat::Keyboard | QWaylandSeat::Touch);
 }
 
 void HWindow::mouseMoveEvent(QMouseEvent *event) {
@@ -127,19 +148,26 @@ void HWindow::keyPressEvent(QKeyEvent *e) {
 #ifdef HAWKWM_DEBUG
 void HWindow::toggleAppMenu() {
     if (!m_appMenu) {
-        m_appMenu = new HAppMenu(nullptr);
-        m_appMenu->setAttribute(Qt::WA_DeleteOnClose, true);
-        connect(m_appMenu, &QDialog::finished, this, [this]() {
-            m_appMenu = nullptr;
+        m_appMenu = new HAppMenu(QString::fromUtf8(m_compositor->socketName()), nullptr);
+        m_appMenu->setVisible(false);
+        connect(m_appMenu, &HAppMenu::contentChanged, this, [this]() {
+            m_menuDirty = true;
+            update();
         });
     }
     if (m_appMenu->isVisible()) {
-        m_appMenu->close();
+        m_appMenu->hide();
+        m_menuVisible = false;
+        m_menuDirty = false;
+        delete m_menuTexture;
+        m_menuTexture = nullptr;
+        update();
     } else {
         m_appMenu->show();
-        m_appMenu->raise();
-        m_appMenu->activateWindow();
         m_appMenu->focusSearch();
+        m_menuVisible = true;
+        m_menuDirty = true;
+        update();
     }
 }
 #endif

@@ -81,8 +81,8 @@ void HCompositor::onTopLevelCreated(QWaylandXdgToplevel *toplevel, QWaylandXdgSu
         delete window;
     });
 
-    connect(toplevel, &QWaylandXdgToplevel::activated, this,
-        [=]() { });
+    connect(toplevel, &QWaylandXdgToplevel::activatedChanged, this,
+        [=]() { if (toplevel->activated()) raise(view); });
 }
 
 void HCompositor::create() {

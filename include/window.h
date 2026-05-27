@@ -13,6 +13,7 @@
 
 class HCompositor;
 class HAppMenu;
+class QOpenGLTexture;
 
 struct ManagedWindow {
     QWaylandView *view;
@@ -58,6 +59,9 @@ private:
     QWaylandXdgToplevel *m_topLevel = nullptr; // Identify The Window On Server
 #ifdef HAWKWM_DEBUG
     HAppMenu *m_appMenu = nullptr;
+    QOpenGLTexture *m_menuTexture = nullptr;
+    bool m_menuVisible = false;
+    bool m_menuDirty = false;
 #endif
 };
 

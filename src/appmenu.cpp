@@ -15,10 +15,8 @@
 #include <QStandardPaths>
 #include <QKeyEvent>
 
-HAppMenu::HAppMenu(QWidget *parent) : QDialog(parent) {
-    setWindowTitle("HawkWM Application Menu");
-    setMinimumSize(420, 520);
-    resize(480, 600);
+HAppMenu::HAppMenu(const QString &socketName, QWidget *parent) : QWidget(parent), m_socketName(socketName) {
+    setFixedSize(420, 520);
 
     auto *layout = new QVBoxLayout(this);
 
@@ -39,8 +37,12 @@ HAppMenu::HAppMenu(QWidget *parent) : QDialog(parent) {
             QListWidgetItem *item = m_list->item(i);
             item->setHidden(!item->text().contains(text, Qt::CaseInsensitive));
         }
+        emit contentChanged();
     });
+    connect(m_list, &QListWidget::currentRowChanged, this, &HAppMenu::contentChanged);
 }
+
+HAppMenu::~HAppMenu() {}
 
 void HAppMenu::loadApplications() {
     QDir appsDir("/usr/share/applications");
@@ -109,10 +111,21 @@ void HAppMenu::launchSelected() {
     exec.remove(fieldCodes);
     exec = exec.trimmed();
 
-    if (!exec.isEmpty())
-        QProcess::startDetached(exec);
+    if (!exec.isEmpty()) {
+        m_process = new QProcess(this);
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        env.insert("WAYLAND_DISPLAY", m_socketName);
+        m_process->setProcessEnvironment(env);
+        m_process->setProcessChannelMode(QProcess::ForwardedChannels);
+        connect(m_process, &QProcess::finished, this, [this]() {
+            m_process->deleteLater();
+            m_process = nullptr;
+        });
+        m_process->start(exec);
+    }
 
-    accept();
+    hide();
+    emit contentChanged();
 }
 
 void HAppMenu::focusSearch() {
@@ -122,12 +135,13 @@ void HAppMenu::focusSearch() {
 
 void HAppMenu::keyPressEvent(QKeyEvent *e) {
     if (e->key() == Qt::Key_Escape) {
-        reject();
+        hide();
+        emit contentChanged();
         return;
     }
     if (e->key() == Qt::Key_Return || e->key() == Qt::Key_Enter) {
         launchSelected();
         return;
     }
-    QDialog::keyPressEvent(e);
+    QWidget::keyPressEvent(e);
 }
