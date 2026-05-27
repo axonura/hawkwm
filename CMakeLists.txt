@@ -8,5 +8,9 @@ set(CMAKE_AUTOMOC ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Qml WaylandCompositor)
 
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    add_compile_definitions(HAWKWM_DEBUG)
+endif()
+
 include_directories(include)
 add_subdirectory(src)

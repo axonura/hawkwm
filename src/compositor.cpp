@@ -23,6 +23,8 @@
 QOpenGLTexture *HView::getTexture() {
     if(advance())
         m_texture = currentBuffer().toOpenGLTexture();
+    else
+        return nullptr;
     return m_texture;
 }
 
@@ -54,15 +56,23 @@ HCompositor::~HCompositor() {
 
 void HCompositor::onTopLevelCreated(QWaylandXdgToplevel *toplevel, QWaylandXdgSurface *xdgSurface) {
     QWaylandSurface *csurface = xdgSurface->surface();
-    QWaylandQuickItem *window = new QWaylandQuickItem();
-    window->setSurface(csurface);
-    window->setSize(QSizeF(500, 400));
+    HWindow *window = new HWindow();
+    window->setTopLevel(toplevel);
+    window->handleXdgToplevelCreated(toplevel, xdgSurface);
 
     HView *view = new HView(this);
     view->setSurface(csurface);
     view->setGlobalPosition(QPoint(100, 100)); // I Will Be Implement Dynamic Posistioning
     m_views.append(view);
     m_windows.append(window);
+
+    // Find Window Parent Then Connect With The Parent On Server
+    for (HWindow *win : m_windows) {
+        if (toplevel == win->getTopLevel()) {
+            win->handleXdgToplevelCreated(toplevel, xdgSurface);
+            break;
+        }
+    }
 
     connect(toplevel, &QObject::destroyed, this, [=]() {
         m_views.removeOne(view);

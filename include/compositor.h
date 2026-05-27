@@ -66,7 +66,7 @@ private:
     QWaylandIviApplication *m_iviApplication = nullptr;
     QList<HView*> m_views;
     QPointer<HView> m_mouseView;
-    QList<QWaylandQuickItem*> m_windows;
+    QList<HWindow*> m_windows;
 
 public:
     // Declaration only: Implementation details reside entirely in compositor.cpp

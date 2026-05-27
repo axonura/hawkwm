@@ -5,13 +5,13 @@
  * under certain conditions; type `show c' for details.
  */
 
-#include <QGuiApplication>
+#include <QApplication>
 #include <QQmlApplicationEngine>
 #include <compositor.h>
 #include <window.h>
 
 int main(int argc, char *argv[]) {
-    QGuiApplication app(argc, argv);
+    QApplication app(argc, argv);
 
     HWindow root;
     root.resize(800,600);
