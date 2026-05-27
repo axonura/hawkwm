@@ -49,6 +49,7 @@ protected:
     QPointF getViewOffset(QWaylandView *view);
 #ifdef HAWKWM_DEBUG
     void toggleAppMenu();
+    QPointF menuRenderPos() const;
 #endif
 
 private:

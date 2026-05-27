@@ -12,6 +12,7 @@
 #include <QMouseEvent>
 #include <QWheelEvent>
 #include <QPixmap>
+#include <QCoreApplication>
 #include <QWaylandCompositor>
 #include <QKeyEvent>
 #include <compositor.h>
@@ -100,7 +101,29 @@ void HWindow::handleXdgToplevelCreated(QWaylandXdgToplevel *toplevel, QWaylandXd
     m_windowList.append(win);
 }
 
+QPointF HWindow::menuRenderPos() const {
+    if (!m_menuTexture) return {};
+    QSize winSize = size();
+    return QPointF((winSize.width() - m_menuTexture->width()) / 2.0,
+                   (winSize.height() - m_menuTexture->height()) / 2.0);
+}
+
 void HWindow::mousePressEvent(QMouseEvent *event) {
+#ifdef HAWKWM_DEBUG
+    if (m_menuVisible && m_appMenu) {
+        QPointF origin = menuRenderPos();
+        QSizeF menuSize(m_appMenu->size());
+        QRectF menuRect(origin, menuSize);
+        if (menuRect.contains(event->position())) {
+            QPointF local = event->position() - origin;
+            QMouseEvent *forward = new QMouseEvent(event->type(), local, local, event->globalPosition(),
+                                                    event->button(), event->buttons(), event->modifiers());
+            QCoreApplication::sendEvent(m_appMenu, forward);
+            delete forward;
+            return;
+        }
+    }
+#endif
     m_compositor->handleMousePress(event->position().toPoint(), event->button());
 }
 
@@ -111,6 +134,20 @@ void HWindow::setCompositor(HCompositor *hcmp) {
 }
 
 void HWindow::mouseMoveEvent(QMouseEvent *event) {
+#ifdef HAWKWM_DEBUG
+    if (m_menuVisible && m_appMenu) {
+        QPointF origin = menuRenderPos();
+        QRectF menuRect(origin, m_appMenu->size());
+        if (menuRect.contains(event->position())) {
+            QPointF local = event->position() - origin;
+            QMouseEvent *forward = new QMouseEvent(event->type(), local, local, event->globalPosition(),
+                                                    event->button(), event->buttons(), event->modifiers());
+            QCoreApplication::sendEvent(m_appMenu, forward);
+            delete forward;
+            return;
+        }
+    }
+#endif
     if (m_seat && m_seat->pointer()) {
         QWaylandView *hvrView = findViewAt(event->position());
         if (hvrView) {
@@ -123,11 +160,24 @@ void HWindow::mouseMoveEvent(QMouseEvent *event) {
             qDebug() << "Pointer Unfocused.";
         }
     }
-    //m_compositor->handleMouseMove(event->position().toPoint());
     QWindow::mouseMoveEvent(event);
 }
 
 void HWindow::mouseReleaseEvent(QMouseEvent *event) {
+#ifdef HAWKWM_DEBUG
+    if (m_menuVisible && m_appMenu) {
+        QPointF origin = menuRenderPos();
+        QRectF menuRect(origin, m_appMenu->size());
+        if (menuRect.contains(event->position())) {
+            QPointF local = event->position() - origin;
+            QMouseEvent *forward = new QMouseEvent(event->type(), local, local, event->globalPosition(),
+                                                    event->button(), event->buttons(), event->modifiers());
+            QCoreApplication::sendEvent(m_appMenu, forward);
+            delete forward;
+            return;
+        }
+    }
+#endif
     m_compositor->handleMouseRelease(event->position().toPoint(), event->button(), event->buttons());
 }
 
@@ -141,6 +191,11 @@ void HWindow::keyPressEvent(QKeyEvent *e) {
         toggleAppMenu();
         return;
     }
+    if (m_menuVisible && m_appMenu) {
+        QCoreApplication::sendEvent(m_appMenu, e);
+        if (e->isAccepted())
+            return;
+    }
 #endif
     m_compositor->handleKeyPress(e->nativeScanCode());
 }
@@ -150,20 +205,19 @@ void HWindow::toggleAppMenu() {
     if (!m_appMenu) {
         m_appMenu = new HAppMenu(QString::fromUtf8(m_compositor->socketName()), nullptr);
         m_appMenu->setVisible(false);
+        m_appMenu->winId();
         connect(m_appMenu, &HAppMenu::contentChanged, this, [this]() {
             m_menuDirty = true;
             update();
         });
     }
-    if (m_appMenu->isVisible()) {
-        m_appMenu->hide();
+    if (m_menuVisible) {
         m_menuVisible = false;
         m_menuDirty = false;
         delete m_menuTexture;
         m_menuTexture = nullptr;
         update();
     } else {
-        m_appMenu->show();
         m_appMenu->focusSearch();
         m_menuVisible = true;
         m_menuDirty = true;
