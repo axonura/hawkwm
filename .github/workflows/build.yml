@@ -2,18 +2,12 @@ name: C/C++ CI
 
 on:
   push:
-    branches:
-      - "main"
-
+    branches: [ "main" ]
   pull_request:
-    branches:
-      - "main"
+    branches: [ "main" ]
 
 jobs:
 
-  #
-  # Build Qt Once
-  #
   qt-build:
     runs-on: ubuntu-latest
 
@@ -21,7 +15,6 @@ jobs:
     - name: Install Linux Dependencies
       run: |
         sudo apt update
-
         sudo apt install -y \
           ninja-build \
           build-essential \
@@ -52,7 +45,6 @@ jobs:
     - name: Clone Qt Sources
       run: |
         cd ~
-
         git clone https://github.com/qt/qtbase.git
         git clone https://github.com/qt/qtwayland.git
 
@@ -76,11 +68,10 @@ jobs:
           -confirm-license \
           -nomake examples \
           -nomake tests \
-          -cmake-generator Ninja
+          -cmake-generator Ninja \
           -no-feature-textmarkdownreader
 
         cmake --build . --parallel
-
         sudo cmake --install .
 
     - name: Build QtWayland
@@ -91,17 +82,15 @@ jobs:
         cd build
 
         /opt/qt6/bin/qt-configure-module .. \
-          -cmake-generator Ninja
+          -cmake-generator Ninja \
           -no-feature-textmarkdownreader
 
         cmake --build . --parallel
-
         sudo cmake --install .
 
     - name: Package Qt SDK
       run: |
         cd /opt
-
         sudo tar -czf $HOME/qt6-sdk.tar.gz qt6
 
     - name: Upload Qt SDK
@@ -111,10 +100,6 @@ jobs:
         path: ~/qt6-sdk.tar.gz
 
 
-
-  #
-  # Build Application Matrix
-  #
   app-build:
     needs: qt-build
 
@@ -122,9 +107,7 @@ jobs:
 
     strategy:
       matrix:
-        build_type:
-          - Debug
-          - Release
+        build_type: [Debug, Release]
 
     steps:
     - uses: actions/checkout@v4
@@ -132,7 +115,6 @@ jobs:
     - name: Install Runtime Dependencies
       run: |
         sudo apt update
-
         sudo apt install -y \
           ninja-build \
           build-essential \
@@ -153,13 +135,12 @@ jobs:
     - name: Extract Qt SDK
       run: |
         cd /
-
         sudo tar -xzf ~/qt6-sdk.tar.gz
 
     - name: Configure Application
       run: |
         cmake -B build-${{ matrix.build_type }} \
-          -cmake-generator Ninja
+          -G Ninja \
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
           -DCMAKE_PREFIX_PATH=/opt/qt6
 
@@ -175,40 +156,18 @@ jobs:
         mkdir -p artifact/plugins/wayland-decoration-client
         mkdir -p artifact/plugins/wayland-graphics-integration-client
 
-        #
-        # Copy executable
-        #
         cp build-${{ matrix.build_type }}/hawkwm artifact/bin/
 
-        #
-        # Copy Qt libraries
-        #
         cp /opt/qt6/lib/libQt6*.so* artifact/lib/ || true
 
-        #
-        # Copy Wayland platform plugins
-        #
-        cp /opt/qt6/plugins/platforms/libqwayland* \
-          artifact/plugins/platforms/ || true
+        cp /opt/qt6/plugins/platforms/libqwayland* artifact/plugins/platforms/ || true
 
-        #
-        # Copy decoration plugins
-        #
-        cp /opt/qt6/plugins/wayland-decoration-client/* \
-          artifact/plugins/wayland-decoration-client/ || true
+        cp /opt/qt6/plugins/wayland-decoration-client/* artifact/plugins/wayland-decoration-client/ || true
 
-        #
-        # Copy graphics integration plugins
-        #
-        cp /opt/qt6/plugins/wayland-graphics-integration-client/* \
-          artifact/plugins/wayland-graphics-integration-client/ || true
+        cp /opt/qt6/plugins/wayland-graphics-integration-client/* artifact/plugins/wayland-graphics-integration-client/ || true
 
-        #
-        # Launcher script
-        #
         cat > artifact/run.sh << 'EOF'
         #!/bin/bash
-
         DIR="$(cd "$(dirname "$0")" && pwd)"
 
         export LD_LIBRARY_PATH="$DIR/lib:$LD_LIBRARY_PATH"
@@ -219,9 +178,6 @@ jobs:
 
         chmod +x artifact/run.sh
 
-        #
-        # Create zip
-        #
         zip -r hawkwm-${{ matrix.build_type }}.zip artifact
 
     - name: Upload Application Artifact
