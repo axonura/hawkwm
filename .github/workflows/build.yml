@@ -43,7 +43,6 @@ jobs:
           libharfbuzz-dev \
           libb2-dev \
           libdouble-conversion-dev \
-          libmd4c-dev \
           libwayland-dev \
           wayland-protocols \
           libxkbcommon-dev \
