@@ -78,6 +78,7 @@ jobs:
           -nomake examples \
           -nomake tests \
           -cmake-generator Ninja
+          -no-feature-textmarkdownreader
 
         cmake --build . --parallel
 
@@ -92,6 +93,7 @@ jobs:
 
         /opt/qt6/bin/qt-configure-module .. \
           -cmake-generator Ninja
+          -no-feature-textmarkdownreader
 
         cmake --build . --parallel
 
