@@ -82,7 +82,8 @@ jobs:
         cd build
 
         /opt/qt6/bin/qt-configure-module .. \
-          -cmake-generator Ninja
+          -cmake-generator Ninja \
+          -no-feature-textmarkdownreader
 
         cmake --build . --parallel
         sudo cmake --install .
