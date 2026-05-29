@@ -92,15 +92,6 @@ void HWindow::paintGL() {
     m_compositor->endRender();
 }
 
-void HWindow::handleXdgToplevelCreated(QWaylandXdgToplevel *toplevel, QWaylandXdgSurface *surface) {
-    ManagedWindow win;
-
-    win.view = new QWaylandView(surface->surface()); // Wrap the surface in a view
-    win.geometry = QRect(100, 100, 800, 600);       // Position it at x=100, y=100
-
-    m_windowList.append(win);
-}
-
 QPointF HWindow::menuRenderPos() const {
     if (!m_menuTexture) return {};
     QSize winSize = size();
@@ -129,6 +120,9 @@ void HWindow::mousePressEvent(QMouseEvent *event) {
 
 void HWindow::setCompositor(HCompositor *hcmp) {
     m_compositor = hcmp;
+}
+
+void HWindow::createSeat() {
     if (m_seat == nullptr)
         m_seat = new QWaylandSeat(m_compositor, QWaylandSeat::Pointer | QWaylandSeat::Keyboard | QWaylandSeat::Touch);
 }
@@ -148,18 +142,7 @@ void HWindow::mouseMoveEvent(QMouseEvent *event) {
         }
     }
 #endif
-    if (m_seat && m_seat->pointer()) {
-        QWaylandView *hvrView = findViewAt(event->position());
-        if (hvrView) {
-            QPointF rltvClientPos = event->position() - getViewOffset(hvrView);
-
-            m_seat->sendMouseMoveEvent(hvrView, rltvClientPos);
-        }
-        else {
-            m_seat->setMouseFocus(nullptr);
-            qDebug() << "Pointer Unfocused.";
-        }
-    }
+    m_compositor->handleMouseMove(event->position().toPoint());
     QWindow::mouseMoveEvent(event);
 }
 
@@ -210,12 +193,20 @@ void HWindow::toggleAppMenu() {
             m_menuDirty = true;
             update();
         });
+        connect(m_appMenu, &HAppMenu::closed, this, [this]() {
+            m_menuVisible = false;
+            m_menuDirty = false;
+            delete m_menuTexture;
+            m_menuTexture = nullptr;
+            update();
+        });
     }
     if (m_menuVisible) {
         m_menuVisible = false;
         m_menuDirty = false;
         delete m_menuTexture;
         m_menuTexture = nullptr;
+
         update();
     } else {
         m_appMenu->focusSearch();
@@ -228,22 +219,4 @@ void HWindow::toggleAppMenu() {
 
 void HWindow::keyReleaseEvent(QKeyEvent *e) {
     m_compositor->handleKeyRelease(e->nativeScanCode());
-}
-
-QWaylandView* HWindow::findViewAt(const QPointF &pos) {
-    for (int i = m_windowList.size() - 1; i >= 0; --i) {
-        if (m_windowList[i].geometry.contains(pos.toPoint())) {
-            return m_windowList[i].view;
-        }
-    }
-    return nullptr; // No window found under the mouse pointer
-}
-
-QPointF HWindow::getViewOffset(QWaylandView *view) {
-    for (const auto &managedWin : m_windowList) {
-        if (managedWin.view == view) {
-            return managedWin.geometry.topLeft();
-        }
-    }
-    return QPointF(0, 0);
 }

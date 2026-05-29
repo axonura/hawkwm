@@ -23,9 +23,11 @@ public:
 
 signals:
     void contentChanged();
+    void closed();
 
 protected:
     void keyPressEvent(QKeyEvent *e) override;
+    bool eventFilter(QObject *obj, QEvent *event) override;
 
 private:
     QListWidget *m_list;

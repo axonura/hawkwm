@@ -57,22 +57,13 @@ HCompositor::~HCompositor() {
 void HCompositor::onTopLevelCreated(QWaylandXdgToplevel *toplevel, QWaylandXdgSurface *xdgSurface) {
     QWaylandSurface *csurface = xdgSurface->surface();
     HWindow *window = new HWindow();
-    window->setTopLevel(toplevel);
-    window->handleXdgToplevelCreated(toplevel, xdgSurface);
+    //window->setTopLevel(toplevel);
 
     HView *view = new HView(this);
     view->setSurface(csurface);
     view->setGlobalPosition(QPoint(100, 100)); // I Will Be Implement Dynamic Posistioning
     m_views.append(view);
     m_windows.append(window);
-
-    // Find Window Parent Then Connect With The Parent On Server
-    for (HWindow *win : m_windows) {
-        if (toplevel == win->getTopLevel()) {
-            win->handleXdgToplevelCreated(toplevel, xdgSurface);
-            break;
-        }
-    }
 
     connect(toplevel, &QObject::destroyed, this, [=]() {
         m_views.removeOne(view);
