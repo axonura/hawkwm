@@ -18,8 +18,9 @@ build/
 .idx
 *.tmp
 
-# Ignore Unwanted Directories
+# Ignore Unwanted Directories And Files
 .*/
+xdg-shell-*
 
 # Compiled Files
 *.o
