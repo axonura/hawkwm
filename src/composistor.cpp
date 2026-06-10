@@ -353,6 +353,15 @@ HComposistor::HComposistor(DisplayProtocol protocol) : m_surface(nullptr), m_fra
                 std::cerr << "Failed To Initialize AT-SPI." << std::endl;
                 std::exit(1474);
             }
+
+            m_current_damage = None;
+            {
+                int comp_event_base, comp_error_base;
+                m_composite_available = XCompositeQueryExtension(std::get<Display*>(display),
+                    &comp_event_base, &comp_error_base);
+                XDamageQueryExtension(std::get<Display*>(display),
+                    &m_damage_event_base, &m_damage_error_base);
+            }
             break;
 
         /* default:
@@ -401,6 +410,20 @@ void HComposistor::onScriptMessageReceived(WebKitUserContentManager *manager, We
     self->handleScriptMessage(message);
 }
 
+void HComposistor::onJavaScriptEvaluated(GObject *source_object, GAsyncResult *res, gpointer user_data) {
+    WebKitWebView *web_view = WEBKIT_WEB_VIEW(source_object);
+    GError *error = nullptr;
+    JSCValue *result = webkit_web_view_evaluate_javascript_finish(web_view, res, &error);
+    
+    if (error) {
+        std::cout << "[JavaScript Error] " << error->message << std::endl;
+        g_error_free(error);
+    }
+    
+    if (result)
+        g_object_unref(result);
+}
+
 void HComposistor::handleScriptMessage(const std::string &message) {
     const std::string prefix = "window-update:";
     if (message.rfind(prefix, 0) != 0)
@@ -418,6 +441,92 @@ void HComposistor::handleScriptMessage(const std::string &message) {
 
     XMoveResizeWindow(std::get<Display*>(display), currentWindow, x, y, width, height);
     XFlush(std::get<Display*>(display));
+}
+
+/*
+ * captureAndUpdateWebView not getting callback
+ */
+
+void HComposistor::captureAndUpdateWebView(const std::string& wid, Window window,
+                                           unsigned int width, unsigned int height) {
+    if (!m_composite_available || width == 0 || height == 0)
+        return;
+
+    Display *disp = std::get<Display*>(display);
+
+    Pixmap pixmap = XCompositeNameWindowPixmap(disp, window);
+    if (!pixmap)
+        return;
+
+    XImage *image = XGetImage(disp, pixmap, 0, 0, width, height, AllPlanes, ZPixmap);
+    XFreePixmap(disp, pixmap);
+    if (!image)
+        return;
+
+    GdkPixbuf *pixbuf = gdk_pixbuf_new(GDK_COLORSPACE_RGB, FALSE, 8, width, height);
+    if (!pixbuf) {
+        XDestroyImage(image);
+        return;
+    }
+
+    auto trailingZeros = [](unsigned long mask) -> int {
+        if (!mask) return 0;
+        int n = 0;
+        while (!(mask & 1)) { mask >>= 1; n++; }
+        return n;
+    };
+
+    int rshift = trailingZeros(image->red_mask);
+    int gshift = trailingZeros(image->green_mask);
+    int bshift = trailingZeros(image->blue_mask);
+
+    guchar *pixels = gdk_pixbuf_get_pixels(pixbuf);
+    int dest_stride = gdk_pixbuf_get_rowstride(pixbuf);
+
+    for (unsigned int y = 0; y < height; y++) {
+        for (unsigned int x = 0; x < width; x++) {
+            unsigned long pixel = XGetPixel(image, x, y);
+            pixels[y * dest_stride + x * 3 + 0] = (pixel >> rshift) & 0xFF;
+            pixels[y * dest_stride + x * 3 + 1] = (pixel >> gshift) & 0xFF;
+            pixels[y * dest_stride + x * 3 + 2] = (pixel >> bshift) & 0xFF;
+        }
+    }
+
+    XDestroyImage(image);
+
+    gchar *png_buffer = nullptr;
+    gsize png_size = 0;
+    gdk_pixbuf_save_to_buffer(pixbuf, &png_buffer, &png_size, "png", nullptr, nullptr);
+    g_object_unref(pixbuf);
+
+    if (!png_buffer || png_size == 0)
+        return;
+
+    gchar *b64 = g_base64_encode(reinterpret_cast<const guchar*>(png_buffer), png_size);
+    g_free(png_buffer);
+
+    if (!b64)
+        return;
+
+    std::string js = "var w=document.getElementById('" + wid + "');"
+                     "if(!w)return;"
+                     "var c=document.getElementById('" + wid + "_content');"
+                     "if(!c){"
+                     "  c=document.createElement('img');"
+                     "  c.id='" + wid + "_content';"
+                     "  c.style.cssText='position:absolute;top:0;left:0;width:100%;height:100%;"
+                     "    object-fit:fill;z-index:0;pointer-events:none;';"
+                     "  w.appendChild(c);"
+                     "}"
+                     "c.src='data:image/png;base64," + std::string(b64) + "';";
+
+    webkit_web_view_evaluate_javascript(
+        WEBKIT_WEB_VIEW(webView), js.c_str(),
+        -1, nullptr, nullptr, nullptr,
+        (GAsyncReadyCallback)onJavaScriptEvaluated, nullptr
+    );
+
+    g_free(b64);
 }
 
 uint32_t HComposistor::interpretProtocolError() {
@@ -451,6 +560,20 @@ void HComposistor::loop() {
         XEvent event;
         while (1) {
             XNextEvent(std::get<Display*>(display), &event);
+            if (event.type == m_damage_event_base + XDamageNotify) {
+                XDamageNotifyEvent *de = reinterpret_cast<XDamageNotifyEvent*>(&event);
+                if (de->damage == m_current_damage && currentWindow != 0
+                        && !m_current_wrapper_id.empty()) {
+                    XWindowAttributes attrs;
+                    if (XGetWindowAttributes(std::get<Display*>(display), currentWindow, &attrs)
+                            && attrs.width > 0 && attrs.height > 0) {
+                        captureAndUpdateWebView(m_current_wrapper_id, currentWindow,
+                                                attrs.width, attrs.height);
+                    }
+                }
+                continue;
+            }
+
             switch (event.type) {
                 case CreateNotify:
                     onXorgWindowCreated(&event.xcreatewindow.window);
@@ -461,8 +584,8 @@ void HComposistor::loop() {
                     break;
 
                 case ResizeRequest: {
-                    XCreateWindowEvent *wev = &event.xcreatewindow;
-                    onXorgWindowResized(wev->window, wev->height, wev->width, wev->x, wev->y);
+                    XResizeRequestEvent *wev = &event.xresizerequest;
+                    onXorgWindowResized(wev->window, wev->height, wev->width, 0, 0);
                     break;
                 }
 
@@ -484,8 +607,9 @@ void HComposistor::onXorgWindowDestoried(Window* window) {
 }
 
 void HComposistor::onXorgWindowResized(Window window, int height, int width, int x, int y) {
-    XResizeWindow(std::get<Display*>(display), window, height, width);
-    XMoveWindow(std::get<Display*>(display), window, x, y);
+    XResizeWindow(std::get<Display*>(display), window, width, height);
+    if (x != 0 || y != 0)
+        XMoveWindow(std::get<Display*>(display), window, x, y);
 }
 
 void HComposistor::setSurface(struct wl_surface *surface) {
@@ -519,13 +643,12 @@ void HComposistor::updateFrame() {
             NULL,
             NULL,
             NULL,
-            NULL,
+            (GAsyncReadyCallback)onJavaScriptEvaluated,
             NULL
         );
         return;
     }
-
-    if (std::holds_alternative<wl_display*>(display) && m_surface) {
+    else if (std::holds_alternative<wl_display*>(display) && m_surface) {
         if (m_frame_callback) {
             wl_callback_destroy(m_frame_callback);
             m_frame_callback = nullptr;
@@ -593,6 +716,18 @@ void HComposistor::reloadWindow(WindowVariant window) {
                 }
             }
 
+            if (m_composite_available && *xwindow) {
+                if (m_current_damage != None) {
+                    XDamageDestroy(std::get<Display*>(display), m_current_damage);
+                    m_current_damage = None;
+                }
+                XCompositeRedirectWindow(std::get<Display*>(display), *xwindow,
+                                          CompositeRedirectAutomatic);
+                m_current_damage = XDamageCreate(std::get<Display*>(display), *xwindow,
+                                                  XDamageReportRawRectangles);
+                m_current_wrapper_id = wid;
+            }
+
             std::string wrapperStyle = std::string("position:fixed;")
                                        + "top:" + std::to_string(win_y) + "px;"
                                        + "left:" + std::to_string(win_x) + "px;"
@@ -610,6 +745,11 @@ void HComposistor::reloadWindow(WindowVariant window) {
                  "var w=document.createElement('div');"
                  "w.id='" + wid + "';"
                  "w.style.cssText='" + wrapperStyle + "';"
+                 "var c=document.createElement('img');"
+                 "c.id='" + wid + "_content';"
+                 "c.style.cssText='position:absolute;top:0;left:0;width:100%;height:100%;"
+                     "object-fit:fill;z-index:0;pointer-events:none;';"
+                 "w.appendChild(c);"
                  "var reportWindow=function(){"
                      "var left=parseInt(w.style.left,10)||0;"
                      "var top=parseInt(w.style.top,10)||0;"
@@ -620,7 +760,7 @@ void HComposistor::reloadWindow(WindowVariant window) {
                  "};"
                  "w.addEventListener('mouseup',reportWindow);"
                  "document.body.appendChild(w);").c_str(),
-                -1, NULL, NULL, NULL, NULL, NULL
+                -1, NULL, NULL, NULL, (GAsyncReadyCallback)onJavaScriptEvaluated, NULL
             );
             AtspiAccessible* desktop = atspi_get_desktop(0);
             if (desktop) {
@@ -632,12 +772,12 @@ void HComposistor::reloadWindow(WindowVariant window) {
                             webkit_web_view_evaluate_javascript(
                                 WEBKIT_WEB_VIEW(webView),
                                 getJSCodeFromRole(app, wid).c_str(),
-                                -1,               // Length of the string (-1 if null-terminated)
-                                NULL,             // World name (NULL for the main isolated world)
-                                NULL,             // Source URI
-                                NULL,             // GCancellable object
-                                NULL,             // Callback function
-                                NULL              // User data passed to callback
+                                -1,
+                                NULL,
+                                NULL,
+                                NULL,
+                                (GAsyncReadyCallback)onJavaScriptEvaluated,
+                                NULL
                             );
                             g_object_unref(app);
                             break;
@@ -647,6 +787,10 @@ void HComposistor::reloadWindow(WindowVariant window) {
                 }
                 g_object_unref(desktop);
             }
+
+            // The Bug Around Here
+            if (m_composite_available && *xwindow && win_width > 0 && win_height > 0)
+                captureAndUpdateWebView(wid, *xwindow, win_width, win_height);
 
             XFlush(std::get<Display*>(display));
         }
@@ -666,6 +810,19 @@ void HComposistor::destory(WindowVariant window) {
                 }
                 XFree(wm_name);
             }
+            if (m_composite_available && *xwindow == currentWindow) {
+                if (m_current_damage != None) {
+                    XDamageDestroy(std::get<Display*>(display), m_current_damage);
+                    m_current_damage = None;
+                }
+                XCompositeUnredirectWindow(std::get<Display*>(display), *xwindow,
+                                            CompositeRedirectAutomatic);
+                currentWindow = 0;
+                currentPid = 0;
+                if (!m_current_wrapper_id.empty()) {
+                    m_current_wrapper_id.clear();
+                }
+            }
             XDestroyWindow(std::get<Display*>(display), *xwindow);
         }
     } else {
@@ -675,12 +832,11 @@ void HComposistor::destory(WindowVariant window) {
         }
     }
 
-    // Clean-up Elements Of Destroyed Window
     if (!title.empty()) {
         webkit_web_view_evaluate_javascript(
             WEBKIT_WEB_VIEW(webView),
             ("var e=document.getElementById('" + title + "');if(e)e.remove();").c_str(),
-            -1, NULL, NULL, NULL, NULL, NULL
+            -1, NULL, NULL, NULL, (GAsyncReadyCallback)onJavaScriptEvaluated, NULL
         );
     }
 }

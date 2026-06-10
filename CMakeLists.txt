@@ -42,6 +42,8 @@ pkg_check_modules(WaylandServer REQUIRED IMPORTED_TARGET wayland-server)
 pkg_check_modules(X11 REQUIRED IMPORTED_TARGET x11)
 pkg_check_modules(Xi REQUIRED IMPORTED_TARGET xi)
 pkg_check_modules(Xrandr REQUIRED IMPORTED_TARGET xrandr)
+pkg_check_modules(XCOMPOSITE REQUIRED IMPORTED_TARGET xcomposite)
+pkg_check_modules(XDAMAGE REQUIRED IMPORTED_TARGET xdamage)
 
 pkg_check_modules(WPE IMPORTED_TARGET wpe-1.0)
 pkg_check_modules(WPE_FDO IMPORTED_TARGET wpe-fdo-1.0)

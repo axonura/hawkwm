@@ -1,15 +1,8 @@
-set(HAWKWM_SOURCES
+add_executable(hawkwm
         main.cpp
         composistor.cpp
-        ../include/composistor.h)
-
-if(TARGET PkgConfig::WPE AND TARGET PkgConfig::WPE_FDO)
-    list(APPEND HAWKWM_SOURCES transpiler.cpp)
-else()
-    message(WARNING "WPE or WPE_FDO not found; transpiler.cpp will not be built.")
-endif()
-
-add_executable(hawkwm ${HAWKWM_SOURCES})
+        ../include/composistor.h
+)
 add_dependencies(hawkwm xdg-shell-generated)
 
 target_link_libraries(hawkwm PRIVATE
@@ -17,6 +10,8 @@ target_link_libraries(hawkwm PRIVATE
         PkgConfig::X11
         PkgConfig::Xi
         PkgConfig::Xrandr
+        PkgConfig::XCOMPOSITE
+        PkgConfig::XDAMAGE
         Libinput::Libinput
         PkgConfig::WEBKIT
         PkgConfig::GTK3
@@ -24,7 +19,7 @@ target_link_libraries(hawkwm PRIVATE
         PkgConfig::ATSPI
 )
 
-if(TARGET PkgConfig::WPE AND TARGET PkgConfig::WPE_FDO)
+if(DEFINED WPE_FOUND AND DEFINED WPE_FDO_FOUND AND WPE_FOUND AND WPE_FDO_FOUND)
     target_link_libraries(hawkwm PRIVATE
         PkgConfig::WPE
         PkgConfig::WPE_FDO
