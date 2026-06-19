@@ -11,12 +11,15 @@
 #include <variant>
 #include <composistor.h>
 #include <optional>
+#include <thread>
 #include <xdg-shell-client-protocol.h>
 #include <wayland-client.h>
 #include <wayland-server.h>
 #include <X11/Xutil.h>
+#include <X11/Xlib.h>
 #include <gtk/gtk.h>
 #include <gdk/gdkx.h>
+#include <gdk/gdkkeysyms.h>
 #include <webkit2/webkit2.h>
 
 extern "C" {
@@ -292,6 +295,31 @@ static std::string getJSCodeFromRole(AtspiAccessible* accessible, const std::str
     }
 }
 
+static int onXSessionError(Display *display, XErrorEvent *error) {
+    return 0;
+}
+
+GdkFilterReturn HComposistor::onX11EventFilter(GdkXEvent *xevent, GdkEvent *event, gpointer data) {
+    auto *self = static_cast<HComposistor*>(data);
+    auto *xev = static_cast<XEvent*>(xevent);
+
+    if (xev->type == self->m_damage_event_base + XDamageNotify) {
+        auto *de = reinterpret_cast<XDamageNotifyEvent*>(xev);
+        if (de->damage == self->m_current_damage && self->currentWindow != 0
+                && !self->m_current_wrapper_id.empty()) {
+            XWindowAttributes attrs;
+            if (XGetWindowAttributes(std::get<Display*>(self->display), self->currentWindow, &attrs)
+                    && attrs.width > 0 && attrs.height > 0) {
+                self->captureAndUpdateWebView(self->m_current_wrapper_id, self->currentWindow,
+                                              attrs.width, attrs.height);
+            }
+        }
+        return GDK_FILTER_CONTINUE;
+    }
+
+    return GDK_FILTER_CONTINUE;
+}
+
 HComposistor::HComposistor(DisplayProtocol protocol) : m_surface(nullptr), m_frame_callback(nullptr), gwnd(nullptr), webView(nullptr), contentManager(nullptr), currentWindow(0), currentPid(0), gscreen(nullptr) {
     switch (protocol) {
         case DisplayProtocol::Wayland:
@@ -306,18 +334,37 @@ HComposistor::HComposistor(DisplayProtocol protocol) : m_surface(nullptr), m_fra
             break;
 
         case DisplayProtocol::Xorg:
-            display = XOpenDisplay(std::getenv("DISPLAY") ? std::getenv("DISPLAY") : nullptr);
-            if (std::get<Display*>(display) == nullptr) {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+            g_type_init();
+#pragma GCC diagnostic pop
+
+            gdk_set_allowed_backends("x11");
+
+            if (!gtk_init_check(nullptr, nullptr)) {
                 std::cout << "Unable To Connect With Display." << std::endl;
                 std::exit(WL_DISPLAY_ERROR);
             }
+            display = gdk_x11_get_default_xdisplay();
 
-            gdk_set_allowed_backends("x11");
-            gtk_init(nullptr, nullptr);
+            if (atspi_init()) {
+                std::cerr << "Failed To Initialize AT-SPI." << std::endl;
+                std::exit(1474);
+            }
+
+            m_current_damage = None;
+            {
+                int comp_event_base, comp_error_base;
+                m_composite_available = XCompositeQueryExtension(std::get<Display*>(display),
+                    &comp_event_base, &comp_error_base);
+                XDamageQueryExtension(std::get<Display*>(display),
+                    &m_damage_event_base, &m_damage_error_base);
+            }
 
             gwnd = gtk_window_new(GTK_WINDOW_TOPLEVEL);
             gtk_window_set_default_size(GTK_WINDOW(gwnd), 1280, 720);
             g_signal_connect(gwnd, "destroy", G_CALLBACK(gtk_main_quit), NULL);
+            g_signal_connect(gwnd, "key-press-event", G_CALLBACK(HComposistor::onKeyPress), this);
 
             contentManager = webkit_user_content_manager_new();
             webkit_user_content_manager_register_script_message_handler(contentManager, "hawk");
@@ -340,28 +387,14 @@ HComposistor::HComposistor(DisplayProtocol protocol) : m_surface(nullptr), m_fra
             root = GDK_WINDOW_XID(gdk_window);
             gscreen = gdk_display_get_default_screen(gdk_display_get_default());
 
-            XSelectInput(std::get<Display*>(display), root, SubstructureNotifyMask | StructureNotifyMask | ExposureMask | KeyPressMask);
+            XSelectInput(std::get<Display*>(display), root, SubstructureNotifyMask | StructureNotifyMask | ExposureMask);
             updateFrame();
+            XSetErrorHandler(onXSessionError);
             XSetIOErrorHandler(onXSessionExit);
-
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-            g_type_init(); // Required for older GLib structures used by AT-SPI
-#pragma GCC diagnostic pop
-
-            if (atspi_init()) {
-                std::cerr << "Failed To Initialize AT-SPI." << std::endl;
-                std::exit(1474);
-            }
-
-            m_current_damage = None;
-            {
-                int comp_event_base, comp_error_base;
-                m_composite_available = XCompositeQueryExtension(std::get<Display*>(display),
-                    &comp_event_base, &comp_error_base);
-                XDamageQueryExtension(std::get<Display*>(display),
-                    &m_damage_event_base, &m_damage_error_base);
-            }
+            gtk_widget_show_all(gwnd);
+            gdk_window_add_filter(NULL, onX11EventFilter, this);
+            //std::thread worker(&HComposistor::loop, this);
+            //worker.detach();
             break;
 
         /* default:
@@ -392,6 +425,16 @@ void HComposistor::onFrameDone(void *data, struct wl_callback *callback, uint32_
     self->updateFrame();
 }
 
+gboolean HComposistor::onKeyPress(GtkWidget *widget, GdkEventKey *event, gpointer user_data) {
+    switch (event->keyval) {
+        case GDK_KEY_Escape:
+            std::exit(0);
+        default:
+            break;
+    }
+    return FALSE;
+}
+
 void HComposistor::onScriptMessageReceived(WebKitUserContentManager *manager, WebKitJavascriptResult *result, gpointer user_data) {
     HComposistor *self = static_cast<HComposistor*>(user_data);
     if (!self || !result)
@@ -414,12 +457,12 @@ void HComposistor::onJavaScriptEvaluated(GObject *source_object, GAsyncResult *r
     WebKitWebView *web_view = WEBKIT_WEB_VIEW(source_object);
     GError *error = nullptr;
     JSCValue *result = webkit_web_view_evaluate_javascript_finish(web_view, res, &error);
-    
+
     if (error) {
         std::cout << "[JavaScript Error] " << error->message << std::endl;
         g_error_free(error);
     }
-    
+
     if (result)
         g_object_unref(result);
 }
@@ -548,8 +591,6 @@ uint32_t HComposistor::interpretProtocolError() {
 }
 
 int HComposistor::onXSessionExit(Display *display) {
-    if (display)
-        XCloseDisplay(display);
     std::cout << "Session Exitting." << std::endl;
     std::exit(0);
     return 0;
@@ -559,21 +600,11 @@ void HComposistor::loop() {
     if (std::holds_alternative<Display*>(display)) {
         XEvent event;
         while (1) {
-            XNextEvent(std::get<Display*>(display), &event);
-            if (event.type == m_damage_event_base + XDamageNotify) {
-                XDamageNotifyEvent *de = reinterpret_cast<XDamageNotifyEvent*>(&event);
-                if (de->damage == m_current_damage && currentWindow != 0
-                        && !m_current_wrapper_id.empty()) {
-                    XWindowAttributes attrs;
-                    if (XGetWindowAttributes(std::get<Display*>(display), currentWindow, &attrs)
-                            && attrs.width > 0 && attrs.height > 0) {
-                        captureAndUpdateWebView(m_current_wrapper_id, currentWindow,
-                                                attrs.width, attrs.height);
-                    }
-                }
-                continue;
-            }
+            bool UIDone = false;
+            if (g_main_context_iteration(g_main_context_default(), false))
+                UIDone = true;
 
+            XNextEvent(std::get<Display*>(display), &event);
             switch (event.type) {
                 case CreateNotify:
                     onXorgWindowCreated(&event.xcreatewindow.window);
@@ -585,7 +616,7 @@ void HComposistor::loop() {
 
                 case ResizeRequest: {
                     XResizeRequestEvent *wev = &event.xresizerequest;
-                    onXorgWindowResized(wev->window, wev->height, wev->width, 0, 0);
+                    onXorgWindowResized(wev->window, wev->height, wev->width);
                     break;
                 }
 
@@ -593,23 +624,41 @@ void HComposistor::loop() {
                     if (event.xexpose.window == root)
                         updateFrame();
                     break;
+
+                case ConfigureNotify:
+                    onXorgWindowMoved(event.xconfigure.window, event.xconfigure.x, event.xconfigure.y);
+                    break;
+
+                /* default:
+                    break; */
             }
+
+            if (UIDone)
+                g_usleep(2000); // Prevent From Spin Lock Stuck
+        }
+    } else if (std::holds_alternative<wl_display*>(display)) {
+        while (1) {
+            wl_display_dispatch(std::get<wl_display*>(display));
         }
     }
 }
 
 void HComposistor::onXorgWindowCreated(Window* window) {
-    reloadWindow(window);
+    if (*window != root);
+        reloadWindow(window);
 }
 
 void HComposistor::onXorgWindowDestoried(Window* window) {
     destory(window);
 }
 
-void HComposistor::onXorgWindowResized(Window window, int height, int width, int x, int y) {
+void HComposistor::onXorgWindowResized(Window window, int height, int width) {
     XResizeWindow(std::get<Display*>(display), window, width, height);
-    if (x != 0 || y != 0)
-        XMoveWindow(std::get<Display*>(display), window, x, y);
+}
+
+void HComposistor::onXorgWindowMoved(Window window, int x, int y) {
+    if (window == root) return;
+    XMoveWindow(std::get<Display*>(display), window, x, y);
 }
 
 void HComposistor::setSurface(struct wl_surface *surface) {
@@ -664,6 +713,25 @@ void HComposistor::reloadWindow(WindowVariant window) {
     if (std::holds_alternative<Window*>(window) && std::holds_alternative<Display*>(display)) {
         Window *xwindow = std::get<Window*>(window);
         if (xwindow && *xwindow) {
+            XEvent xev;
+            xev.type = ClientMessage;
+            xev.xclient.window = *xwindow;
+            xev.xclient.message_type = XInternAtom(std::get<Display*>(display), "WM_CHANGE_STATE", False);
+            xev.xclient.format = 32;
+            xev.xclient.data.l[0] = IconicState; // Force it to iconic (minimized) state
+
+            // Send the message to the root window
+            XSendEvent(
+                std::get<Display*>(display),
+                root,
+                False,
+                SubstructureRedirectMask | SubstructureNotifyMask,
+                &xev
+            );
+
+            // If Hawk WM Ignores To Unmap The Window
+            XUnmapWindow(std::get<Display*>(display), *xwindow);
+
             XMapWindow(std::get<Display*>(display), *xwindow);
 
             Atom actual_type;
@@ -842,11 +910,7 @@ void HComposistor::destory(WindowVariant window) {
 }
 
 HComposistor::~HComposistor() {
-    if (std::holds_alternative<Display*>(display)) {
-        Display *disp = std::get<Display*>(display);
-        if (disp)
-            XCloseDisplay(disp);
-    } else if (std::holds_alternative<wl_display*>(display)) {
+    if (std::holds_alternative<wl_display*>(display)) {
         wl_display *disp = std::get<wl_display*>(display);
         if (disp) {
             wl_display_disconnect(disp);

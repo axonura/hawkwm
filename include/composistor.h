@@ -32,7 +32,7 @@ using WindowVariant = std::variant<struct xdg_surface*, Window*>;
 class HComposistor {
 private:
     DisplayVariant display;
-    Window root;
+    Window root = None;
     GtkWidget *gwnd, *webView;
     WebKitUserContentManager *contentManager;
     Window currentWindow;
@@ -54,7 +54,8 @@ private:
     static void onWlWindowCreated(void *data, struct xdg_surface *xdg_surface, uint32_t serial);
     void onXorgWindowCreated(Window* window);
     void onXorgWindowDestoried(Window* window);
-    void onXorgWindowResized(Window window, int height, int width, int x, int y);
+    void onXorgWindowResized(Window window, int height, int width);
+    void onXorgWindowMoved(Window window, int x, int y);
     static void onFrameDone(void *data, struct wl_callback *callback, uint32_t time);
     void reloadWindow(WindowVariant window);
     void destory(WindowVariant window);
@@ -63,8 +64,10 @@ private:
     void captureAndUpdateWebView(const std::string& wid, Window window,
                                   unsigned int width, unsigned int height);
     static int onXSessionExit(Display *display);
+    static GdkFilterReturn onX11EventFilter(GdkXEvent *xevent, GdkEvent *event, gpointer data);
     static void onScriptMessageReceived(WebKitUserContentManager *manager, WebKitJavascriptResult *result, gpointer user_data);
     static void onJavaScriptEvaluated(GObject *source_object, GAsyncResult *res, gpointer user_data);
+    static gboolean onKeyPress(GtkWidget *widget, GdkEventKey *event, gpointer user_data);
     void handleScriptMessage(const std::string &message);
 public:
     HComposistor(DisplayProtocol protocol);
