@@ -18,6 +18,7 @@
 #include <wayland-server.h>
 #include <xdg-shell-client-protocol.h>
 #include <optional>
+#include <chrono>
 #include <gtk/gtk.h>
 #include <gdk/gdkx.h>
 #include <webkit2/webkit2.h>
@@ -40,12 +41,18 @@ private:
     struct wl_surface *m_surface;
     struct wl_callback *m_frame_callback;
     GdkScreen *gscreen;
+    XEvent event;
 
     int m_damage_event_base;
     int m_damage_error_base;
     bool m_composite_available;
     Damage m_current_damage;
     std::string m_current_wrapper_id;
+
+    // Cached pixbuf to avoid reallocation between frames
+    GdkPixbuf *m_cached_pixbuf = nullptr;
+    unsigned int m_cached_width = 0;
+    unsigned int m_cached_height = 0;
 
     static const struct xdg_surface_listener xdg_surface_listener;
     static const struct wl_callback_listener frame_listener;
@@ -69,6 +76,8 @@ private:
     static void onJavaScriptEvaluated(GObject *source_object, GAsyncResult *res, gpointer user_data);
     static gboolean onKeyPress(GtkWidget *widget, GdkEventKey *event, gpointer user_data);
     void handleScriptMessage(const std::string &message);
+    void toggleAppMenu();
+    void xevent();
 public:
     HComposistor(DisplayProtocol protocol);
     void loop();
