@@ -31,6 +31,5 @@ DisplayProtocol currentDisplayProtocol() {
 int main(int argc, char **argv) {
     HComposistor hcomp = HComposistor(currentDisplayProtocol());
     hcomp.loop();
-    //gtk_main();
     return 0;
 }

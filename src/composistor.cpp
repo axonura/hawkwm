@@ -17,10 +17,12 @@
 #include <wayland-server.h>
 #include <X11/Xutil.h>
 #include <X11/Xlib.h>
+#include <X11/extensions/Xrandr.h>
 #include <gtk/gtk.h>
 #include <gdk/gdkx.h>
 #include <gdk/gdkkeysyms.h>
 #include <webkit2/webkit2.h>
+#include <gio/gio.h>
 
 extern "C" {
     #include <atspi/atspi.h>
@@ -362,7 +364,8 @@ HComposistor::HComposistor(DisplayProtocol protocol) : m_surface(nullptr), m_fra
             }
 
             gwnd = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-            gtk_window_set_default_size(GTK_WINDOW(gwnd), 1280, 720);
+            Screen* scr = DefaultScreenOfDisplay(std::get<Display*>(display));
+            gtk_window_set_default_size(GTK_WINDOW(gwnd), WidthOfScreen(scr), HeightOfScreen(scr));
             g_signal_connect(gwnd, "destroy", G_CALLBACK(gtk_main_quit), NULL);
             g_signal_connect(gwnd, "key-press-event", G_CALLBACK(HComposistor::onKeyPress), this);
 
@@ -377,6 +380,7 @@ HComposistor::HComposistor(DisplayProtocol protocol) : m_surface(nullptr), m_fra
 
             gtk_widget_show_all(gwnd);
             gtk_widget_realize(gwnd);
+            gtk_window_fullscreen(GTK_WINDOW(gwnd));
 
             GdkWindow *gdk_window = gtk_widget_get_window(gwnd);
             if (gdk_window == nullptr) {
@@ -393,6 +397,7 @@ HComposistor::HComposistor(DisplayProtocol protocol) : m_surface(nullptr), m_fra
             XSetIOErrorHandler(onXSessionExit);
             gtk_widget_show_all(gwnd);
             gdk_window_add_filter(NULL, onX11EventFilter, this);
+
             //std::thread worker(&HComposistor::loop, this);
             //worker.detach();
             break;
@@ -427,8 +432,15 @@ void HComposistor::onFrameDone(void *data, struct wl_callback *callback, uint32_
 
 gboolean HComposistor::onKeyPress(GtkWidget *widget, GdkEventKey *event, gpointer user_data) {
     switch (event->keyval) {
+#ifdef DEBUG_MODE
+        case GDK_KEY_F12:
+            static_cast<HComposistor*>(user_data)->toggleAppMenu();
+            return TRUE;
+
         case GDK_KEY_Escape:
             std::exit(0);
+#endif
+
         default:
             break;
     }
@@ -468,6 +480,20 @@ void HComposistor::onJavaScriptEvaluated(GObject *source_object, GAsyncResult *r
 }
 
 void HComposistor::handleScriptMessage(const std::string &message) {
+    const std::string launchPrefix = "app-launch:";
+    if (message.rfind(launchPrefix, 0) == 0) {
+        std::string execCmd = message.substr(launchPrefix.size());
+        if (!execCmd.empty()) {
+            GError *error = nullptr;
+            if (!g_spawn_command_line_async(execCmd.c_str(), &error)) {
+                std::cerr << "Failed to launch: " << execCmd
+                          << " (" << (error ? error->message : "unknown") << ")" << std::endl;
+                if (error) g_error_free(error);
+            }
+        }
+        return;
+    }
+
     const std::string prefix = "window-update:";
     if (message.rfind(prefix, 0) != 0)
         return;
@@ -486,9 +512,79 @@ void HComposistor::handleScriptMessage(const std::string &message) {
     XFlush(std::get<Display*>(display));
 }
 
-/*
- * captureAndUpdateWebView not getting callback
- */
+void HComposistor::toggleAppMenu() {
+#ifdef DEBUG_MODE
+    if (!webView) return;
+
+    std::string appsArray = "[";
+    GList *apps = g_app_info_get_all();
+    bool first = true;
+    for (GList *l = apps; l != nullptr; l = l->next) {
+        GAppInfo *app = G_APP_INFO(l->data);
+        const char *name = g_app_info_get_display_name(app);
+        const char *exec = g_app_info_get_commandline(app);
+        if (name && exec && *name && *exec) {
+            if (!first) appsArray += ",";
+            first = false;
+            appsArray += "{name:" + jsStr(name) + ",exec:" + jsStr(exec) + "}";
+        }
+        g_object_unref(app);
+    }
+    g_list_free(apps);
+    appsArray += "]";
+
+    std::string js = std::string(
+        "(function(){"
+        "var e=document.getElementById('hawk-app-menu');"
+        "if(e){e.remove();return;}"
+        "var apps=") + appsArray + std::string(
+        ";"
+        "var m=document.createElement('div');"
+        "m.id='hawk-app-menu';"
+        "m.style.cssText='position:fixed;top:0;left:0;width:100%;height:100%;"
+            "background:rgba(0,0,0,0.55);z-index:99998;"
+            "display:flex;align-items:center;justify-content:center;';"
+        "var p=document.createElement('div');"
+        "p.style.cssText='background:rgba(20,22,40,0.98);border-radius:16px;"
+            "padding:24px;min-width:300px;max-width:90vw;max-height:90vh;"
+            "overflow-y:auto;box-shadow:0 24px 80px rgba(0,0,0,0.6);';"
+        "var h=document.createElement('div');"
+        "h.style.cssText='color:#fff;font-size:22px;font-weight:bold;"
+            "margin-bottom:16px;padding-bottom:12px;text-align:center;"
+            "font-family:sans-serif;border-bottom:1px solid rgba(255,255,255,0.1);';"
+        "h.textContent='Applications';"
+        "p.appendChild(h);"
+        "apps.forEach(function(a){"
+        "  var d=document.createElement('div');"
+        "  d.style.cssText='padding:12px 16px;margin:6px 0;"
+            "background:rgba(255,255,255,0.06);border-radius:8px;"
+            "cursor:pointer;color:#ddd;font-size:15px;font-family:sans-serif;"
+            "display:flex;justify-content:space-between;align-items:center;"
+            "transition:background 0.15s;';"
+        "  d.onmouseover=function(){this.style.background='rgba(255,255,255,0.12)';};"
+        "  d.onmouseout=function(){this.style.background='rgba(255,255,255,0.06)';};"
+        "  d.onclick=function(){"
+        "    if(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.hawk)"
+        "      window.webkit.messageHandlers.hawk.postMessage('app-launch:' + a.exec);"
+        "    m.remove();"
+        "  };"
+        "  var s=document.createElement('span');"
+        "  s.textContent=a.name;"
+        "  d.appendChild(s);"
+        "  p.appendChild(d);"
+        "});"
+        "m.appendChild(p);"
+        "m.addEventListener('click',function(e){if(e.target===m)m.remove();});"
+        "document.body.appendChild(m);"
+        "})();");
+
+    webkit_web_view_evaluate_javascript(
+        WEBKIT_WEB_VIEW(webView), js.c_str(),
+        -1, NULL, NULL, NULL,
+        (GAsyncReadyCallback)onJavaScriptEvaluated, NULL
+    );
+#endif
+}
 
 void HComposistor::captureAndUpdateWebView(const std::string& wid, Window window,
                                            unsigned int width, unsigned int height) {
@@ -506,7 +602,16 @@ void HComposistor::captureAndUpdateWebView(const std::string& wid, Window window
     if (!image)
         return;
 
-    GdkPixbuf *pixbuf = gdk_pixbuf_new(GDK_COLORSPACE_RGB, FALSE, 8, width, height);
+    // Reuse cached pixbuf when dimensions match; reallocate only when needed
+    if (!m_cached_pixbuf || m_cached_width != width || m_cached_height != height) {
+        if (m_cached_pixbuf) {
+            g_object_unref(m_cached_pixbuf);
+        }
+        m_cached_pixbuf = gdk_pixbuf_new(GDK_COLORSPACE_RGB, FALSE, 8, width, height);
+        m_cached_width = width;
+        m_cached_height = height;
+    }
+    GdkPixbuf *pixbuf = m_cached_pixbuf;
     if (!pixbuf) {
         XDestroyImage(image);
         return;
@@ -525,22 +630,39 @@ void HComposistor::captureAndUpdateWebView(const std::string& wid, Window window
 
     guchar *pixels = gdk_pixbuf_get_pixels(pixbuf);
     int dest_stride = gdk_pixbuf_get_rowstride(pixbuf);
+    int bpp = image->bits_per_pixel / 8;
 
+    // Fast bulk pixel conversion: inline XGetPixel to avoid per-pixel function-call overhead
     for (unsigned int y = 0; y < height; y++) {
+        guchar *src_row = (guchar*)image->data + y * image->bytes_per_line;
+        guchar *dst_row = pixels + y * dest_stride;
         for (unsigned int x = 0; x < width; x++) {
-            unsigned long pixel = XGetPixel(image, x, y);
-            pixels[y * dest_stride + x * 3 + 0] = (pixel >> rshift) & 0xFF;
-            pixels[y * dest_stride + x * 3 + 1] = (pixel >> gshift) & 0xFF;
-            pixels[y * dest_stride + x * 3 + 2] = (pixel >> bshift) & 0xFF;
+            unsigned long pixel;
+            if (bpp >= 4) {
+                pixel = (unsigned long)src_row[x * 4]
+                      | ((unsigned long)src_row[x * 4 + 1] << 8)
+                      | ((unsigned long)src_row[x * 4 + 2] << 16)
+                      | ((unsigned long)src_row[x * 4 + 3] << 24);
+            } else if (bpp == 3) {
+                pixel = (unsigned long)src_row[x * 3]
+                      | ((unsigned long)src_row[x * 3 + 1] << 8)
+                      | ((unsigned long)src_row[x * 3 + 2] << 16);
+            } else {
+                pixel = XGetPixel(image, x, y);
+            }
+            dst_row[x * 3]     = (pixel >> rshift) & 0xFF;
+            dst_row[x * 3 + 1] = (pixel >> gshift) & 0xFF;
+            dst_row[x * 3 + 2] = (pixel >> bshift) & 0xFF;
         }
     }
 
     XDestroyImage(image);
 
+    // Use fast PNG compression (level 1 instead of default 9) — vastly reduces encode time
     gchar *png_buffer = nullptr;
     gsize png_size = 0;
-    gdk_pixbuf_save_to_buffer(pixbuf, &png_buffer, &png_size, "png", nullptr, nullptr);
-    g_object_unref(pixbuf);
+    gdk_pixbuf_save_to_buffer(pixbuf, &png_buffer, &png_size, "png", nullptr,
+                               "compression", "1", nullptr);
 
     if (!png_buffer || png_size == 0)
         return;
@@ -558,7 +680,7 @@ void HComposistor::captureAndUpdateWebView(const std::string& wid, Window window
                      "  c=document.createElement('img');"
                      "  c.id='" + wid + "_content';"
                      "  c.style.cssText='position:absolute;top:0;left:0;width:100%;height:100%;"
-                     "    object-fit:fill;z-index:0;pointer-events:none;';"
+                     "    object-fit:fill;z-index:0;pointer-events:none;image-rendering:auto;';"
                      "  w.appendChild(c);"
                      "}"
                      "c.src='data:image/png;base64," + std::string(b64) + "';";
@@ -596,45 +718,67 @@ int HComposistor::onXSessionExit(Display *display) {
     return 0;
 }
 
+void HComposistor::xevent() {
+    XNextEvent(std::get<Display*>(display), &event);
+    switch (event.type) {
+        case CreateNotify:
+            onXorgWindowCreated(&event.xcreatewindow.window);
+            break;
+
+        case DestroyNotify:
+            onXorgWindowDestoried(&event.xdestroywindow.window);
+            break;
+
+        case ResizeRequest: {
+            XResizeRequestEvent *wev = &event.xresizerequest;
+            onXorgWindowResized(wev->window, wev->height, wev->width);
+            break;
+        }
+
+        case Expose:
+            if (event.xexpose.window == root)
+                updateFrame();
+            break;
+
+        case RRScreenChangeNotify: {
+            XRRUpdateConfiguration(&event);
+            Screen* scr = DefaultScreenOfDisplay(std::get<Display*>(display));
+            int width = WidthOfScreen(scr);
+            int height = HeightOfScreen(scr);
+            XResizeWindow(std::get<Display*>(display), root, width, height);
+            //onDisplayResolutionChanged(width, height);
+            updateFrame();
+            break;
+        }
+
+        case ConfigureNotify:
+            onXorgWindowResized(event.xconfigure.window, event.xconfigure.height, event.xconfigure.width);
+            onXorgWindowMoved(event.xconfigure.window, event.xconfigure.x, event.xconfigure.y);
+            break;
+
+            /* default:
+                break; */
+    }
+}
+
 void HComposistor::loop() {
     if (std::holds_alternative<Display*>(display)) {
-        XEvent event;
+        int event_base, error_base;
+        if (!XRRQueryExtension(std::get<Display*>(display), &event_base, &error_base)) {
+            std::cerr << "XRandR extension not supported\n";
+            XCloseDisplay(std::get<Display*>(display));
+            exit(1);
+        }
+
+        XRRSelectInput(std::get<Display*>(display), root, RRScreenChangeNotifyMask);
+        std::thread worker([this]{
+            HComposistor::xevent();
+        });
         while (1) {
-            bool UIDone = false;
-            if (g_main_context_iteration(g_main_context_default(), false))
-                UIDone = true;
+            if (worker.get_id() == std::thread::id())
+                worker.detach();
 
-            XNextEvent(std::get<Display*>(display), &event);
-            switch (event.type) {
-                case CreateNotify:
-                    onXorgWindowCreated(&event.xcreatewindow.window);
-                    break;
-
-                case DestroyNotify:
-                    onXorgWindowDestoried(&event.xdestroywindow.window);
-                    break;
-
-                case ResizeRequest: {
-                    XResizeRequestEvent *wev = &event.xresizerequest;
-                    onXorgWindowResized(wev->window, wev->height, wev->width);
-                    break;
-                }
-
-                case Expose:
-                    if (event.xexpose.window == root)
-                        updateFrame();
-                    break;
-
-                case ConfigureNotify:
-                    onXorgWindowMoved(event.xconfigure.window, event.xconfigure.x, event.xconfigure.y);
-                    break;
-
-                /* default:
-                    break; */
-            }
-
-            if (UIDone)
-                g_usleep(2000); // Prevent From Spin Lock Stuck
+            g_main_context_iteration(g_main_context_default(), false);
         }
     } else if (std::holds_alternative<wl_display*>(display)) {
         while (1) {
@@ -732,8 +876,6 @@ void HComposistor::reloadWindow(WindowVariant window) {
             // If Hawk WM Ignores To Unmap The Window
             XUnmapWindow(std::get<Display*>(display), *xwindow);
 
-            XMapWindow(std::get<Display*>(display), *xwindow);
-
             Atom actual_type;
             int aformat;
             unsigned long nitems, bytes_after;
@@ -808,7 +950,7 @@ void HComposistor::reloadWindow(WindowVariant window) {
 
             webkit_web_view_evaluate_javascript(
                 WEBKIT_WEB_VIEW(webView),
-                ("document.body.style.cssText='margin:0;background:#fff;';"
+                (                 "document.body.style.cssText='margin:0;overflow:hidden;background:#fff;';"
                  "var e=document.getElementById('" + wid + "');if(e)e.remove();"
                  "var w=document.createElement('div');"
                  "w.id='" + wid + "';"
@@ -816,16 +958,15 @@ void HComposistor::reloadWindow(WindowVariant window) {
                  "var c=document.createElement('img');"
                  "c.id='" + wid + "_content';"
                  "c.style.cssText='position:absolute;top:0;left:0;width:100%;height:100%;"
-                     "object-fit:fill;z-index:0;pointer-events:none;';"
+                     "object-fit:fill;z-index:0;pointer-events:none;image-rendering:auto;';"
                  "w.appendChild(c);"
                  "var reportWindow=function(){"
-                     "var left=parseInt(w.style.left,10)||0;"
-                     "var top=parseInt(w.style.top,10)||0;"
-                     "var width=parseInt(w.style.width,10)||0;"
-                     "var height=parseInt(w.style.height,10)||0;"
-                     "if(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.hawk)"
-                         "window.webkit.messageHandlers.hawk.postMessage('window-update:' + left + ',' + top + ',' + width + ',' + height + '," + std::to_string(pid) + "');"
-                 "};"
+                      "var r=w.getBoundingClientRect();"
+                      "var left=Math.round(r.left);var top=Math.round(r.top);"
+                      "var width=Math.round(r.width);var height=Math.round(r.height);"
+                      "if(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.hawk)"
+                          "window.webkit.messageHandlers.hawk.postMessage('window-update:' + left + ',' + top + ',' + width + ',' + height + '," + std::to_string(pid) + "');"
+                  "};"
                  "w.addEventListener('mouseup',reportWindow);"
                  "document.body.appendChild(w);").c_str(),
                 -1, NULL, NULL, NULL, (GAsyncReadyCallback)onJavaScriptEvaluated, NULL
@@ -910,6 +1051,10 @@ void HComposistor::destory(WindowVariant window) {
 }
 
 HComposistor::~HComposistor() {
+    if (m_cached_pixbuf) {
+        g_object_unref(m_cached_pixbuf);
+        m_cached_pixbuf = nullptr;
+    }
     if (std::holds_alternative<wl_display*>(display)) {
         wl_display *disp = std::get<wl_display*>(display);
         if (disp) {
