@@ -996,8 +996,7 @@ void HComposistor::reloadWindow(WindowVariant window) {
                 }
                 g_object_unref(desktop);
             }
-
-            // The Bug Around Here
+            
             if (m_composite_available && *xwindow && win_width > 0 && win_height > 0)
                 captureAndUpdateWebView(wid, *xwindow, win_width, win_height);
 
@@ -1055,7 +1054,11 @@ HComposistor::~HComposistor() {
         g_object_unref(m_cached_pixbuf);
         m_cached_pixbuf = nullptr;
     }
-    if (std::holds_alternative<wl_display*>(display)) {
+    if (std::holds_alternative<Display*>(display)) {
+        XUngrabKeyboard(std::get<Display*>(display), CurrentTime);
+        XCloseDisplay(std::get<Display*>(display));
+    }
+    else if (std::holds_alternative<wl_display*>(display)) {
         wl_display *disp = std::get<wl_display*>(display);
         if (disp) {
             wl_display_disconnect(disp);
