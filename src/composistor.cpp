@@ -1054,10 +1054,8 @@ HComposistor::~HComposistor() {
         g_object_unref(m_cached_pixbuf);
         m_cached_pixbuf = nullptr;
     }
-    if (std::holds_alternative<Display*>(display)) {
-        XUngrabKeyboard(std::get<Display*>(display), CurrentTime);
+    if (std::holds_alternative<Display*>(display))
         XCloseDisplay(std::get<Display*>(display));
-    }
     else if (std::holds_alternative<wl_display*>(display)) {
         wl_display *disp = std::get<wl_display*>(display);
         if (disp) {
